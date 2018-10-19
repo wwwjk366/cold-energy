@@ -38,20 +38,6 @@ test <- cold_start_test %>%
   )
 
 
-# test %>% 
-#   mutate(
-#     offday = case_when(
-#       monday_is_day_off == "True" & weekday == 2 ~ 1,
-#       tuesday_is_day_off == "True" & weekday == 3 ~ 1,
-#       wednesday_is_day_off == "True" & weekday == 4 ~ 1,
-#       thursday_is_day_off == "True" & weekday == 5 ~ 1,
-#       friday_is_day_off == "True" & weekday == 6 ~ 1,
-#       saturday_is_day_off == "True" & weekday == 7 ~ 1,
-#       sunday_is_day_off == "True" & weekday == 1 ~ 1,
-#       TRUE ~ 0    )
-#   ) %>% View()
-# 
-
 subs <- submission_format %>% 
   left_join(meta, by = "series_id") %>%
   mutate(
@@ -63,7 +49,6 @@ subs <- submission_format %>%
     base_temperature = as.factor(base_temperature)
   )
 
-testdf <- submission_format[7:9,]
 
 
 expand_time <- function(data, idx) {
@@ -108,10 +93,10 @@ expand_time <- function(data, idx) {
 
 subs_hourly <- 1:nrow(subs) %>% map_df(~ expand_time(subs, .x)) %>% 
   mutate(
-    weekday = lubridate::wday(timestamp),
-    hour = lubridate::hour(timestamp),
-    month = lubridate::month(timestamp),
-    day = lubridate::day(timestamp),
+    weekday = lubridate::wday(timestamp2),
+    hour = lubridate::hour(timestamp2),
+    month = lubridate::month(timestamp2),
+    day = lubridate::day(timestamp2),
     surface = as.factor(surface),
     base_temperature = as.factor(base_temperature),
     offday = case_when(
@@ -128,6 +113,12 @@ subs_hourly <- 1:nrow(subs) %>% map_df(~ expand_time(subs, .x)) %>%
     is_holiday = ifelse(month == 12 & day == 25, 1 ,is_holiday)
   )
 
+
+test %>% 
+  group_by(surface, offday) %>% 
+  summarise(mean = mean(consumption),
+            n = n()
+            )
 
 
 vals <- test %>% 
@@ -148,10 +139,6 @@ vals_alloff <- test %>%
   group_by(surface, offday) %>% 
   summarise(mean_consum_sf = mean(consumption, na.rm = TRUE)) 
 
-vals_alloff <- test %>% 
-  group_by(surface, offday) %>% 
-  summarise(mean_consum_sf = mean(consumption, na.rm = TRUE)) 
-
 vals_holi <- test %>% 
   group_by(is_holiday, hour) %>% 
   summarise(mean_consum_holi = mean(consumption, na.rm = TRUE)) 
@@ -164,7 +151,7 @@ vals_low <- test %>%
 
 
 ##### Model best 
-final2 <- subs_hourly %>%
+final <- subs_hourly %>%
   left_join(vals, by = c("series_id", "weekday", "hour")) %>%
   left_join(vals_3, by = c("series_id", "offday", "hour")) %>%
   left_join(vals_2, by = c("series_id", "hour")) %>%

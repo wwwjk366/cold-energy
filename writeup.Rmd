@@ -1,0 +1,391 @@
+---
+title: "Cold Energy"
+author: "Michael Yan"
+date: "10/18/2018"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Load the data
+
+
+```{r cars}
+library(readr)
+library(tidyverse)
+library(xgboost)
+library(lubridate)
+library(magrittr)
+library(scales)
+set.seed(12345)
+
+cold_start_test <-
+  read_csv("cold_start_test.csv") %>% as.data.frame()
+consumption_train <-
+  read_csv("consumption_train.csv") %>% as.data.frame()
+meta <- read_csv("meta.csv") %>% as.data.frame()
+submission_format <-
+  read_csv("submission_format.csv") %>% as.data.frame()
+
+
+test <- cold_start_test %>% 
+  left_join(meta, by = "series_id") %>%
+  mutate(
+    weekday = lubridate::wday(timestamp),
+    hour = lubridate::hour(timestamp),
+    month = lubridate::month(timestamp),
+    day = lubridate::day(timestamp),
+    surface = as.factor(surface),
+    base_temperature = as.factor(base_temperature),
+    offday = case_when(
+      monday_is_day_off == "True" & weekday == 2 ~ 1,
+      tuesday_is_day_off == "True" & weekday == 3 ~ 1,
+      wednesday_is_day_off == "True" & weekday == 4 ~ 1,
+      thursday_is_day_off == "True" & weekday == 5 ~ 1,
+      friday_is_day_off == "True" & weekday == 6 ~ 1,
+      saturday_is_day_off == "True" & weekday == 7 ~ 1,
+      sunday_is_day_off == "True" & weekday == 1 ~ 1,
+      TRUE ~ 0    ),
+    is_holiday = ifelse(month == 1 & day == 1, 1 ,0),
+    is_holiday = ifelse(month == 12 & day == 24, 1 ,is_holiday),
+    is_holiday = ifelse(month == 12 & day == 25, 1 ,is_holiday)
+  )
+
+train <- consumption_train %>% 
+  left_join(meta, by = "series_id") %>%
+  mutate(
+    weekday = lubridate::wday(timestamp),
+    week = lubridate::week(timestamp),
+    hour = lubridate::hour(timestamp),
+    month = lubridate::month(timestamp),
+    day = lubridate::day(timestamp),
+    surface = as.factor(surface),
+    base_temperature = as.factor(base_temperature),
+    offday = case_when(
+      monday_is_day_off == "True" & weekday == 2 ~ 1,
+      tuesday_is_day_off == "True" & weekday == 3 ~ 1,
+      wednesday_is_day_off == "True" & weekday == 4 ~ 1,
+      thursday_is_day_off == "True" & weekday == 5 ~ 1,
+      friday_is_day_off == "True" & weekday == 6 ~ 1,
+      saturday_is_day_off == "True" & weekday == 7 ~ 1,
+      sunday_is_day_off == "True" & weekday == 1 ~ 1,
+      TRUE ~ 0    ),
+    is_holiday = ifelse(month == 1 & day == 1, 1 ,0),
+    is_holiday = ifelse(month == 12 & day == 24, 1 ,is_holiday),
+    is_holiday = ifelse(month == 12 & day == 25, 1 ,is_holiday)
+  )
+
+subs <- submission_format %>% 
+  left_join(meta, by = "series_id") %>%
+  mutate(
+    surface = as.factor(surface),
+    base_temperature = as.factor(base_temperature)
+  )
+
+```
+
+
+Doing prediction by hour first then combine:
+
+```{r}
+expand_time <- function(data, idx) {
+  xxx <- data[idx, ]
+  
+  if(xxx$prediction_window == "daily"){
+    res <- xxx %>%
+      # select(-timestamp) %>%
+      left_join(data_frame(
+        pred_id = xxx$pred_id[1],
+        timestamp2 = seq(
+          from = xxx$timestamp[1],
+          to = xxx$timestamp[1] + hours(23),
+          by = "hour"
+        )
+      ),
+      by = "pred_id")
+  }else if(xxx$prediction_window == "weekly"){
+    res <- xxx %>%
+      # select(-timestamp) %>%
+      left_join(data_frame(
+        pred_id = xxx$pred_id[1],
+        timestamp2 = seq(
+          from = xxx$timestamp[1],
+          to = xxx$timestamp[1] + weeks(1) - hours(1),
+          by = "hour"
+        )
+      ),
+      by = "pred_id")
+    
+  }else if(xxx$prediction_window == "hourly"){
+    res <- xxx %>% 
+      mutate(timestamp2 = timestamp)
+  
+    }
+
+  
+  return(res)
+  
+}
+
+
+subs_hourly <- 1:nrow(subs) %>% map_df(~ expand_time(subs, .x)) %>% 
+  mutate(
+    weekday = lubridate::wday(timestamp2),
+    hour = lubridate::hour(timestamp2),
+    month = lubridate::month(timestamp2),
+    day = lubridate::day(timestamp2),
+    surface = as.factor(surface),
+    base_temperature = as.factor(base_temperature),
+    offday = case_when(
+      monday_is_day_off == "True" & weekday == 2 ~ 1,
+      tuesday_is_day_off == "True" & weekday == 3 ~ 1,
+      wednesday_is_day_off == "True" & weekday == 4 ~ 1,
+      thursday_is_day_off == "True" & weekday == 5 ~ 1,
+      friday_is_day_off == "True" & weekday == 6 ~ 1,
+      saturday_is_day_off == "True" & weekday == 7 ~ 1,
+      sunday_is_day_off == "True" & weekday == 1 ~ 1,
+      TRUE ~ 0    ),
+    is_holiday = ifelse(month == 1 & day == 1, 1 ,0),
+    is_holiday = ifelse(month == 12 & day == 24, 1 ,is_holiday),
+    is_holiday = ifelse(month == 12 & day == 25, 1 ,is_holiday)
+  )
+
+
+```
+
+
+
+
+
+
+
+```{r}
+
+test %>% 
+  group_by(surface, offday) %>% 
+  summarise(mean = mean(consumption),
+            n = n(),
+            max = max(consumption),
+            min = min(consumption)
+            )
+```
+
+
+
+# Generate average predictions
+```{r}
+vals <- test %>% 
+  group_by(series_id, weekday, hour) %>% 
+  summarise(mean_consum_wh = mean(consumption, na.rm = TRUE)) 
+
+
+vals_2 <- test %>% 
+  group_by(series_id, hour) %>% 
+  summarise(mean_consum_h = mean(consumption, na.rm = TRUE)) 
+
+vals_3 <- test %>% 
+  group_by(series_id, offday, hour) %>% 
+  summarise(mean_consum_offh = mean(consumption, na.rm = TRUE)) 
+
+vals_alloff <- test %>% 
+  group_by(surface, offday) %>% 
+  summarise(mean_consum_sf = mean(consumption, na.rm = TRUE)) 
+
+vals_holi <- test %>% 
+  group_by(is_holiday, hour) %>% 
+  summarise(mean_consum_holi = mean(consumption, na.rm = TRUE)) 
+
+vals_low <- test %>%
+  filter(offday == 0) %>% 
+  group_by(series_id) %>% 
+  summarise(min_consum = min(consumption, na.rm = TRUE)) 
+
+```
+
+
+
+
+```{r}
+final2 <- subs_hourly %>%
+  left_join(vals, by = c("series_id", "weekday", "hour")) %>%
+  left_join(vals_3, by = c("series_id", "offday", "hour")) %>%
+  left_join(vals_2, by = c("series_id", "hour")) %>%
+  left_join(vals_alloff, by = c("surface", "offday")) %>%
+  mutate(consumption = ifelse(is.na(mean_consum_wh),mean_consum_offh,mean_consum_wh),
+         consumption = ifelse(surface %in% c("x-large", "xx-large"),
+                              ifelse(is.na(consumption) & offday == 1 ,mean_consum_h/2,consumption),
+                              ifelse(is.na(consumption) & offday == 1 ,mean_consum_h/1.2,consumption)
+                              ),
+         consumption = ifelse(surface %in% c("x-large", "xx-large"),
+                              ifelse(is.na(consumption) & offday == 0 ,mean_consum_h*2,consumption),
+                              ifelse(is.na(consumption) & offday == 0 ,mean_consum_h*1.2,consumption)
+                              ),
+         consumption = ifelse(is.na(consumption),mean_consum_h,consumption),
+         consumption = ifelse(is.na(consumption),mean_consum_sf,consumption)
+         )
+
+
+final <- subs_hourly %>%
+  left_join(vals, by = c("series_id", "weekday", "hour")) %>%
+  left_join(vals_3, by = c("series_id", "offday", "hour")) %>%
+  left_join(vals_2, by = c("series_id", "hour")) %>%
+  left_join(vals_alloff, by = c("surface", "offday")) %>%
+  mutate(consumption = ifelse(is.na(mean_consum_wh),mean_consum_offh,mean_consum_wh),
+         consumption = ifelse(is.na(consumption),mean_consum_h,consumption),
+         consumption = ifelse(is.na(consumption),mean_consum_sf,consumption)
+         # consumption = ifelse(is_holiday == 1,mean_consum_holi,consumption)
+         )
+```
+
+
+
+```{r}
+compare_predictions <- function(pred1, pred2, series_id, random = FALSE) {
+  
+  if(random){
+  ids <- final %>% 
+    filter(is.na(mean_consum_wh),offday == 1) %>% 
+    pull(series_id) %>% 
+    unique()
+  id  <-  sample(ids, 1) #100148
+  } else {
+    id <- series_id
+  }
+  
+  meta <- pred1 %>% filter(series_id == id) %>% 
+    select(prediction_window, surface, base_temperature) 
+    
+  p1 <- test %>% filter(series_id == id) %>% 
+    ggplot(aes(x = timestamp, y = consumption)) +
+    geom_point()+
+    geom_line() + 
+    geom_point(data = pred1 %>% filter(series_id == id), 
+               aes(x = timestamp2, y = consumption), color = "blue")+
+    geom_line(data = pred1 %>% filter(series_id == id), 
+              aes(x = timestamp2, y = consumption), color = "blue") +
+    ggtitle(paste0(id,",",meta$prediction_window ,",",meta$surface,",",meta$base_temperature))+
+    scale_x_datetime(date_breaks = "1 day",
+                     date_minor_breaks = "1 hour",
+                     date_labels = "%a"
+                     ) +
+    theme(text = element_text(size=12)
+          # axis.text.x = element_text(angle=45, hjust=1)
+          )
+  
+  p2 <- test %>% filter(series_id == id) %>% 
+    ggplot(aes(x = timestamp, y = consumption)) +
+    geom_point()+
+    geom_line() + 
+    geom_point(data = pred2 %>% filter(series_id == id), 
+               aes(x = timestamp2, y = consumption), color = "blue")+
+    geom_line(data = pred2 %>% filter(series_id == id), 
+              aes(x = timestamp2, y = consumption), color = "blue") +
+    ggtitle(paste0(id,",",meta$prediction_window ,",",meta$surface,",",meta$base_temperature))+
+    scale_x_datetime(date_breaks = "1 day",
+                     date_minor_breaks = "1 hour",
+                     date_labels =  "%a"
+    ) +
+    theme(text = element_text(size=12)
+          # axis.text.x = element_text(angle=45, hjust=1)
+    )
+  
+  gridExtra::grid.arrange(p1,p2,ncol = 1)
+
+}
+
+```
+
+
+
+
+Irregular training data
+
+```{r}
+compare_predictions(final, final2, 100148, FALSE)
+```
+
+
+Less training data, but need to predict a week
+
+```{r}
+compare_predictions(final, final2, 103365, FALSE)
+```
+
+
+
+```{r}
+data_num <- test %>% 
+  group_by(series_id) %>% 
+  summarise(data_count = n())
+
+pred_num <- subs_hourly %>% 
+  group_by(series_id) %>% 
+  summarise(to_pred = n(),
+            pred_type = min(prediction_window)
+            )
+
+df <- data_num %>% 
+  left_join(pred_num, "series_id") %>% 
+  mutate(ratio = to_pred/data_count)
+  
+  # group_by(pred_type) %>% 
+  # summarise(ratio = mean(to_pred/data_count),
+  #           count = n()
+  #           )
+
+df %>% filter(pred_type == "daily") %>% pull(ratio) %>% hist(breaks = 100)
+
+df %>% filter(pred_type == "hourly") %>% pull(ratio) %>% hist(breaks = 100)
+
+df %>% filter(pred_type == "weekly") %>% pull(ratio) %>% hist(breaks = 100)
+
+```  
+
+
+
+
+```{r}
+
+test %>% filter(series_id == 103365) %>% 
+  group_by(series_id, day) %>% 
+  summarise(consum = sum(consumption)) %>% 
+  group_by(series_id) %>% 
+  summarise(avg_daily_consum = mean(consum)) 
+  
+train %>% 
+  filter(surface == "xx-large") %>% 
+  group_by(series_id, day) %>% 
+  summarise(consum = sum(consumption)) %>% 
+  group_by(series_id) %>% 
+  summarise(avg_wk_consum = mean(consum)) %>% 
+  left_join(meta, by = "series_id") %>% 
+  pull(avg_wk_consum) %>% 
+  hist(breaks = 20)
+  
+  
+
+
+```
+
+
+
+```{r}
+final_sum <-  final2 %>% 
+  group_by(pred_id) %>% 
+  summarise(consumption = sum(consumption))
+
+
+
+submission_format %>% 
+  select(-consumption) %>% 
+  left_join(final_sum, by = "pred_id") %>% 
+  select(pred_id, 
+         series_id, 
+         timestamp, 
+         temperature,
+         consumption,
+         prediction_window ) %>% 
+  write_csv("201810180816_2.csv")
+```
